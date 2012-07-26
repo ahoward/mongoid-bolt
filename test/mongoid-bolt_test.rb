@@ -67,4 +67,33 @@ Testing Mongoid::Bolt do
     assert{ A.create.lock{ locked = true } }
     assert{ locked }
   end
+
+  test 'that two threads cannot obtain the same lock' do
+    pa = Thread::Pipe.new
+    pb = Thread::Pipe.new
+
+    lock = assert{ Bolt.for(:shared_resource) } 
+
+    a = Thread.new do
+      Thread.current.abort_on_exception = true
+
+      pa.pop
+      pa.push(lock.lock! ? :locked : :not_locked)
+      sleep
+    end
+
+    b = Thread.new do
+      Thread.current.abort_on_exception = true
+
+      pb.pop
+      pb.push(lock.lock! ? :locked : :not_locked)
+      sleep
+    end
+
+    pa.push :go
+    assert{ pa.pop == :locked }
+
+    pb.push :go
+    assert{ pb.pop != :locked }
+  end
 end

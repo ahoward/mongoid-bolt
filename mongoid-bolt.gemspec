@@ -3,7 +3,7 @@
 
 Gem::Specification::new do |spec|
   spec.name = "mongoid-bolt"
-  spec.version = "1.0.0"
+  spec.version = "1.1.0"
   spec.platform = Gem::Platform::RUBY
   spec.summary = "mongoid-bolt"
   spec.description = "a mongoid 3/moped compatible lock implementation and mixin"

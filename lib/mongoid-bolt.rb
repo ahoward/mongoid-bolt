@@ -4,7 +4,7 @@
 #
 module Mongoid
   class Bolt
-    const_set :Version, '1.0.0'
+    const_set :Version, '1.1.0'
 
     class << Bolt
       def version
@@ -81,6 +81,7 @@ end
             field(:hostname, :default => proc{ ::Mongoid::Bolt.hostname })
             field(:ppid, :default => proc{ ::Mongoid::Bolt.ppid })
             field(:pid, :default => proc{ ::Mongoid::Bolt.pid })
+            field(:tid, :default => proc{ ::Mongoid::Bolt.tid })
 
             attr_accessor :stolen
             alias_method :stolen?, :stolen
@@ -100,7 +101,24 @@ end
 
             def alive?
               return true unless localhost?
-              ::Mongoid::Bolt.alive?(ppid, pid)
+
+              process_alive = ::Mongoid::Bolt.process_alive?(ppid, pid)
+
+              same_process = ::Mongoid::Bolt.pid == pid
+
+              if process_alive
+                if same_process
+                  ::Mongoid::Bolt.thread_alive?(tid)
+                else
+                  false
+                end
+              else
+                false
+              end
+            end
+
+            def stale?
+              not alive?
             end
 
             def relock!
@@ -110,7 +128,8 @@ end
                 '_lock._id'      => id,
                 '_lock.hostname' => hostname,
                 '_lock.ppid'     => ppid,
-                '_lock.pid'      => pid
+                '_lock.pid'      => pid,
+                '_lock.tid'      => tid
               }
 
               update = {
@@ -118,6 +137,7 @@ end
                   '_lock.hostname'   => ::Mongoid::Bolt.hostname,
                   '_lock.ppid'       => ::Mongoid::Bolt.ppid,
                   '_lock.pid'        => ::Mongoid::Bolt.pid,
+                  '_lock.tid'        => ::Mongoid::Bolt.tid,
                   '_lock.updated_at' => Time.now.utc
                 }
               }
@@ -136,16 +156,12 @@ end
               self.stolen = !!relock!
             end
 
-            def stale?
-              localhost? and not alive?
-            end
-
             def owner?
               ::Mongoid::Bolt.identifier == identifier
             end
 
             def identifier
-              {:hostname => hostname, :ppid => ppid, :pid => pid}
+              {:hostname => hostname, :ppid => ppid, :pid => pid, :tid => tid}
             end
           end
 
@@ -159,9 +175,11 @@ end
 
         ## locking methods
         #
-          def target_class.lock!(conditions = {}, update = {})
-            conditions.to_options!
-            update.to_options!
+          def target_class.lock!(options = {})
+            options.to_options!
+
+            conditions = (options[:conditions] || {}).to_options!
+            update = (options[:update] || {}).to_options!
 
             conditions[:_lock] = nil
 
@@ -170,6 +188,10 @@ end
             with(safe: true).
               where(conditions).
                 find_and_modify(update, new: true)
+          end
+
+          def target_class.reserve!(options = {})
+            target_class.lock!(options = {})
           end
 
           def lock!(conditions = {})
@@ -201,9 +223,9 @@ end
           def unlock!
             unlocked = false
 
-            if _lock
+            if _lock and _lock.owner?
               begin
-                _lock.destroy if _lock.owner?
+                _lock.destroy
                 @locked = false
                 unlocked = true
               rescue
@@ -315,7 +337,7 @@ end
     ##
     #
       def Bolt.hostname
-        Socket.gethostname
+        @hostname ||= Socket.gethostname
       end
 
       def Bolt.ppid
@@ -326,11 +348,15 @@ end
         Process.pid
       end
 
-      def Bolt.identifier
-        {:hostname => hostname, :ppid => ppid, :pid => pid}
+      def Bolt.tid
+        Thread.current.object_id
       end
 
-      def Bolt.alive?(*pids)
+      def Bolt.identifier
+        {:hostname => hostname, :ppid => ppid, :pid => pid, :tid => tid}
+      end
+
+      def Bolt.process_alive?(*pids)
         pids.flatten.compact.all? do |pid|
           begin
             Process.kill(0, Integer(pid))
@@ -338,6 +364,12 @@ end
           rescue Object
             false
           end
+        end
+      end
+
+      def Bolt.thread_alive?(*tids)
+        tids.flatten.compact.all? do |tid|
+          Thread.list.detect{|thread| thread.object_id == tid}
         end
       end
 
